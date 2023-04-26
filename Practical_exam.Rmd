@@ -1,0 +1,355 @@
+---
+title: |
+    | STATS 7022 - Data Science
+    | Practical Exam
+author: "Nguyen Phuc Thai"
+date: "Trimester `r if(as.integer(format(Sys.time(),'%m'))<5){1}else if(as.integer(format(Sys.time(),'%m'))<9){2}else{3}`, `r format(Sys.time(),'%Y')`"
+output: bookdown::pdf_document2
+fig_caption: yes
+fontsize: 12 pt
+geometry: margin=2.3cm
+header-includes:
+  \usepackage{float}
+toc: False
+---
+
+```{r global-options, include=FALSE}
+library(float)
+knitr::opts_chunk$set(warning=FALSE, message=FALSE,fig.width=7, fig.height=5, fig.align =  'center',fig.pos = 'H')
+```
+
+
+```{r setup, include=FALSE}
+setwd("G:/My Drive/Adelaide uni/Stats7022/Practical exam")
+
+pacman::p_load(tidyverse, tidymodels,inspect_df,skimr,corrplot,vip)
+```
+
+```{r start_exam, include = FALSE}
+start_exam <- function(ID) {
+  ### check valid ID
+  if (!is.numeric(ID)) {
+    stop("Please set ID to your student number. For example, if your student number is a1234567, then please set ID to 1234567.")
+  }
+  if (as.integer(ID) - ID != 0) {
+    stop("Please set ID to your student number. For example, if your student number is a1234567, then please set ID to 1234567.")
+  }
+  ### set seed as year +_ ID
+  seed <- as.integer(format(Sys.time(), "%Y")) + ID
+  set.seed(seed)
+  i <- sample(3,1)
+  ### specify methods and responses
+  comb <- tibble(method = c("lasso regression",
+                            "ridge regression",
+                            "random forest"),
+                    response = c(rep("price", 3)))
+  ### set method and response
+  M1 <- comb[i,]
+  ### give method
+  print(glue::glue("Please fit a {M1$method} model to the data returned by this function, specifying {M1$response} as the response variable."))
+  ### random sample of data
+  data(diamonds, package = "ggplot2")
+  data <- diamonds[,c(7,sample(c(1:6,8:10))[-1])] %>%
+    sample_frac(.8)
+  return(data)
+}
+```
+
+```{r}
+ID <- 1846505
+my_data <- start_exam(ID)
+##### when generating this, I already saved my tuning result, and set the corresponding
+#code chunk to eval=F, and just add a code chunk to load the tuning result back in.
+#So if you want to run the code you have to undo that 
+```
+
+# Analysis
+
+The first five row of the dataset is as follow
+```{r}
+knitr::kable(head(my_data), caption = "First five observations")%>%
+  kableExtra::kable_styling(latex_options = "HOLD_position")
+
+```
+
+
+There are some categorical variables, namely the color of diamonds and the cut of diamonds. They will be coded as factor variable. Three columns x, y and z are ambiguous. From the help document on the diamonds dataset, they are the length, width and depth of the diamonds in millimeters, respectively. Hence they will be renamed accordingly. These are done as follow: 
+
+```{r clean data}
+## factor variable
+my_data=my_data%>%
+  mutate(color=as.factor(color),
+         cut=as.factor(cut))
+
+## renaming ambiguous columns
+my_data <- my_data %>% rename( "diamond_length"='x',
+                                        "diamond_width" = "y",
+                                        "diamond_depth" = "z")
+```
+
+
+A summary of the data is shown as follow:
+```{r}
+knitr::kable(summary(my_data[,1:4]), caption = "data summary")%>%
+  kableExtra::kable_styling(latex_options = "HOLD_position")
+
+knitr::kable(summary(my_data[,5:9]), caption = "data summary")%>%
+  kableExtra::kable_styling(latex_options = "HOLD_position")
+
+```
+
+Aside from the ambiguous name and data type, the data seems to be cleaned at this point. Although it should be noted 
+that there are some very large values in carat (max is 5.01, while 3rd quartile is 1.04), diamond depth (max 31.8 while 3rd quartile is 4.04), diamond width (max 58.9 while 3rd quartile is 6.54) and some other numerical variables. However, looking at the description of the diamond data, there's no indication that these data points are wrong. Hence they will be kept as is.
+
+# EDA
+
+## The response variable
+
+```{r price1, fig.cap="\\label{fig:price}price distribution",cache=T}
+my_data%>%
+  ggplot(aes(x=price))+
+  geom_histogram()+
+  ggtitle('price distribution')
+```
+
+Price of diamonds is right-skewed. Consequently, the data should be transformed to create a more balanced data so the model does not tend to predict response at value range that are more frequent. This is done below by taking the log of the price
+
+```{r log}
+my_data_tranformed<-my_data%>%
+  mutate(price=log(price))
+```
+
+```{r logprice1, fig.cap="\\label{fig:logprice}log of price distribution",cache=T}
+
+my_data_tranformed%>%
+  ggplot(aes(x=price))+
+  geom_histogram()+
+  ggtitle('logged price distribution')+
+  xlab('logged price')
+```
+
+
+
+After taking the log, the data now seems more balanced as shown in figure \@ref(fig:logprice)
+
+
+
+## Predictors
+ 
+
+```{r cor1, fig.cap="\\label{fig:cor}correlations between all predictors",cache=T}
+my_data_tranformed%>%
+  select_if(is.numeric)%>%
+  select(-price)%>%
+  cor()%>%
+  corrplot(title='correlations between all predictors',
+           mar=c(0,0,1,0))
+```
+
+Figure \@ref(fig:cor) shows the correlation plot between all numerical predictor variables. There are some predictors that are very strongly correlated to each other, they are all information regarding the size of the diamonds (length, width, depth and carat or weight of the diamond), which can be expected. Consequently, having one feature is informative about others features. Hence,  all highly correlated features will need to be removed except for one of them so the model does not contains too many redundant features
+
+```{r color, fig.cap="\\label{fig:color} Price distribution for each color",cache=T}
+
+my_data_tranformed%>%
+  ggplot(aes(y=price,x=color,fill=color))+
+  geom_boxplot()+
+  ggtitle('Color and price')+
+  ylab('logged price')
+```
+
+
+Color seems to have some effect on the price of the diamonds as shown in figure \@ref(fig:color). With diamonds of color D and E tend to have the lowest price (lowest median, and lowest interquartile spread), then followed by F and G, then H and I while color J diamonds tend to have the highest price. However, color does not seem to have a very strong effect on price as the distribution seen on the boxplots are relatively close
+
+```{r cut1, fig.cap="\\label{fig:cut} Price distribution for each cut", cache=T}
+
+my_data_tranformed%>%
+  ggplot(aes(y=price,x=cut,fill=cut))+
+  geom_boxplot()+
+  ggtitle('Cut and price')+
+  ylab('logged price')
+```
+
+Looking at \@ref(fig:cut), diamonds with fair cut tend to have prices within a smaller range compared to others cut. While all cut have around the similar mid-point price, except for ideal cut, whose median price is noticeably lower. However, same as color, cut does not seem to have a very strong effect on price as the distribution seen on the boxplots are relatively close
+
+# Model fitting
+
+## Splitting data and creating folds
+
+For testing and validating models, the data will be split as 80% for training and 20% for testing, i.e 34522 observations for the training data and `r nrow(my_data)-round(nrow(my_data)*0.8)` observations for the testing data. For tuning the parameter of the regression random forest model, 5-fold cross validation will be used.
+
+```{r}
+set.seed(2023)
+## Splitting data
+data_split=initial_split(my_data_tranformed,prop=0.8,strata=price)
+train_data=training(data_split)
+test_data=testing(data_split)
+
+## Cross validation folds
+my_folds <- vfold_cv(train_data, v = 5,  strata = price)
+```
+
+
+## Recipe for preprocessing
+
+Price will be the response, while all other variables will be used as predictors. Preprocessing step will include normalization of the numerical variable, removal of highly correlated predictors with default threshold of 0.9 absolute correlation, lumping very low frequent categories within categorical variables with threshold 0.01 (for this dataset, this step will not be necessary as no categories fall below the threshold).
+```{r}
+my_recipe=recipe(price~.,data=train_data)%>%
+  step_normalize(all_numeric_predictors())%>% # normalization
+  step_corr(all_numeric_predictors())%>% #correlation
+  step_other(all_nominal_predictors(),threshold = 0.01) #lumping factors
+
+```
+
+After preprocessing, the dataset is as follow
+
+```{r}
+knitr::kable(head(my_recipe%>%prep()%>%bake(new_data = NULL)), 
+  caption = "data set after going through preprocessing")%>%
+  kableExtra::kable_styling(latex_options = "HOLD_position")
+```
+
+It can be seen that there is only 6 columns (including the logged price response) and 3 variables (diamond's length, width and depth, the depth columns is a different measure) has been removed and only carat is kept.
+
+
+## model and workflow
+
+For the random forest, the number of predictors used to build the each tree and the minimum number of observation for a node to be split will be the hyperparameter to tune. The model will build 500 trees before making the prediction. The model and the workflow is as follow:
+```{r}
+## model 
+rf_model <- rand_forest(mtry = tune(),
+                          min_n = tune(),
+                          trees = 500) %>%
+  set_mode("regression") %>%
+  set_engine("ranger", importance = "impurity")
+
+## workflow
+wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(rf_model)
+```
+
+## Tuning model
+
+### Tune grid
+
+For the number of predictors, values between 1 and 5 will be tested, and for the minimum number of observations at a leaf node for a tree to continue to be split, values of 2, 11, 21, 30 and 40 will be tested. So in total 25 models will be tested for the tuning process
+```{r}
+my_grid <- grid_regular(mtry(c(1,5)),
+                          min_n(),
+                          levels = 5)
+```
+
+### Tuning and saving results
+```{r, eval=F}
+
+
+doParallel::registerDoParallel()
+
+## tuning
+rf_tune <- tune_grid(wf,
+                       resamples = my_folds,
+                       grid = my_grid)
+
+## saving to my director the tuning result
+write_rds(rf_tune,"rf_tune.rds")
+```
+
+```{r, echo=F}
+rf_tune=read_rds('rf_tune.rds')
+```
+
+Tuning result within a fold looks as follow in table \ref{tab:tuneresult}
+```{r tuneresult, cache=T}
+knitr::kable(head(rf_tune[[3]][[1]]), caption = "tuning result")%>%
+  kableExtra::kable_styling(latex_options = "HOLD_position")
+
+```
+
+
+
+```{r tuning1, fig.cap="\\label{fig:tuning} Tuning result",cache=T}
+rf_tune%>%autoplot()
+```
+Figure \@ref(fig:tuning) illustrates that between all tested models,
+only models using a single predictors to build trees seems to perform worse (higher RMSE, and lower RSQ), while other models seem to perform very similarly to each other with RMSE at around 0.22 and R squared close to 0.96. Because of how close these models are, the simpler the model will be preferred, which in this case means the model that make less rigorous split (i.e min_n=40 would be the least rigorous splitting). However, it is worth having a look at the best model from the tuning table:
+
+```{r}
+select_best(rf_tune, metric = "rsq")
+```
+
+Coincidentally, the model that perform marginally better than others is also the one with min_n=40, and mtry=3. Hence this model will be used.
+
+## Performance on the test set
+
+```{r cache=T}
+
+doParallel::registerDoParallel()
+
+## finalizing the workflow with the best model on R squared metric
+wf <- wf %>%
+  finalize_workflow(select_best(rf_tune, metric = "rsq"))
+## fitting the model on the test set
+test_fit <- wf %>% last_fit(split = data_split)
+## collecting performance metrics
+test_fit %>% collect_metrics()
+```
+
+The model performance on the test set is very similar to the performance of this model during cross validation, which means it also performs relatively well. A scatter plot comparing actual price (no log) versus the predicted price (the exponent of the predicted value ) is shown below
+
+```{r test1, fig.cap="\\label{fig:test} Test prediction vs actual test logged price",cache=T} 
+test_fit %>% collect_predictions() %>%
+  ggplot(aes(exp(price), exp(.pred))) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  geom_abline(intercept = 0, slope = 1)+
+  xlab('actual price')+
+  ylab('predicted price')
+```
+
+Overall, the model performs much better at the lower price (at around $7000 or less), but tend to underestimates price of more expensive diamonds.
+
+## Variable importance 
+```{r,  cache=T}
+final_fit=wf%>%
+  fit(train_data)
+
+```
+
+```{r cache=T,fig.cap="\\label{fig:vip} variable importance plot",cache=T}
+final_fit %>% extract_fit_parsnip() %>% vip()+
+  ggtitle('Variable importance')
+```
+
+Further inspection of the model (figure \@ref(fig:vip)) shows that the model prediction is heavily influenced by carat, which means that according to the model, bigger diamonds tend to have higher price. while other predictors did not contribute as much.
+
+
+# Prediction on made up data
+```{r}
+## generating the new data
+set.seed(1)
+madeup_data=tibble(carat=runif(2,0.2,1.04),
+                   cut=c('Fair','Very Good'),
+                   color=c('D', 'F'),
+                   depth=runif(2,43,79),
+                   diamond_depth=runif(2,2.91,4.04),
+                   diamond_width=runif(2,4.73,6.54),
+                   diamond_length=runif(2,4.72,6.54),
+                   table=runif(2,56,59)
+                   )
+```
+
+The new made-up diamonds characteristic is shown below
+```{r cache=T}
+knitr::kable(madeup_data[,1:5], caption = "made up data")%>%
+  kableExtra::kable_styling(latex_options = "HOLD_position")
+knitr::kable(madeup_data[,6:8], caption = "made up data")%>%
+  kableExtra::kable_styling(latex_options = "HOLD_position")
+```
+
+And the model predict their price as follow (actual price, not logged price)
+```{r}
+as.list(final_fit%>%
+  predict(new_data = madeup_data))%>%
+  lapply(exp)
+```
+
